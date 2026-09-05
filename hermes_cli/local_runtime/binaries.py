@@ -303,8 +303,10 @@ def ensure_runtime_installed(tag: str, backend: str,
     asset counter ("1/2") when the plan has several archives.
     Returns the install directory containing llama-server.
     """
-    plan = resolve_assets(tag, backend)
-    install_dir = plan.install_dir
+    # A verified installation may be a locally registered source build.
+    # Check it before resolving downloadable assets: Linux CUDA releases do
+    # not provide prebuilt archives, but a verified source build is valid.
+    install_dir = runtimes_root() / tag / backend
     manifest_path = install_dir / "manifest.json"
     if manifest_path.exists():
         try:
@@ -314,6 +316,9 @@ def ensure_runtime_installed(tag: str, backend: str,
         except (json.JSONDecodeError, OSError):
             pass  # damaged manifest -> reinstall
 
+    plan = resolve_assets(tag, backend)
+    install_dir = plan.install_dir
+    manifest_path = install_dir / "manifest.json"
     install_dir.mkdir(parents=True, exist_ok=True)
     downloads = runtimes_root() / "downloads"
     downloads.mkdir(parents=True, exist_ok=True)

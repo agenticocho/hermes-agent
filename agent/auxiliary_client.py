@@ -8734,6 +8734,47 @@ def _resolve_task_provider_model(
                 cfg_api_key = _scoped_key_env(cfg_key_env) or None
         cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
 
+    # Managed llama.cpp aliases carry their endpoint and key in server.json,
+    # not config.yaml or an environment variable. Resolve that dynamic
+    # endpoint before generic provider credential checks run. Apply to both
+    # explicit call arguments and auxiliary.<task> configuration so every
+    # sync/async/vision path receives the same concrete endpoint.
+    _llamacpp_aliases = {"llamacpp", "llama.cpp", "llama-cpp"}
+    _explicit_provider = str(provider or "").strip().lower()
+    _configured_provider = str(cfg_provider or "").strip().lower()
+
+    if _explicit_provider in _llamacpp_aliases and not base_url:
+        try:
+            from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
+
+            _endpoint = resolve_llamacpp_endpoint()
+        except Exception:
+            _endpoint = None
+        if _endpoint:
+            base_url = str(_endpoint.get("base_url") or "").strip() or None
+            api_key = (
+                str(api_key or "").strip()
+                or str(_endpoint.get("api_key") or "").strip()
+                or None
+            )
+            cfg_api_mode = cfg_api_mode or "chat_completions"
+
+    elif not provider and _configured_provider in _llamacpp_aliases and not cfg_base_url:
+        try:
+            from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
+
+            _endpoint = resolve_llamacpp_endpoint()
+        except Exception:
+            _endpoint = None
+        if _endpoint:
+            cfg_base_url = str(_endpoint.get("base_url") or "").strip() or None
+            cfg_api_key = (
+                str(cfg_api_key or "").strip()
+                or str(_endpoint.get("api_key") or "").strip()
+                or None
+            )
+            cfg_api_mode = cfg_api_mode or "chat_completions"
+
     # 'auto' is a sentinel meaning "inherit from main runtime / auto-detect", not
     # a literal model id. Without this, a config of `auxiliary.<task>.model: auto`
     # propagates the literal string "auto" to the wire, where the provider returns

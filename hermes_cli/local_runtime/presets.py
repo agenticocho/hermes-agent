@@ -66,6 +66,33 @@ def _args_to_keys(args: list[str]) -> dict[str, str]:
     return keys
 
 
+def local_overrides_path() -> Path:
+    """Machine-local per-model settings applied after generated policy."""
+    from hermes_cli.local_runtime.binaries import runtimes_root
+
+    return runtimes_root() / "local-overrides.ini"
+
+
+def _load_local_overrides() -> dict[str, dict[str, str]]:
+    """Read durable model preset overrides; empty on missing/invalid files."""
+    import configparser
+
+    path = local_overrides_path()
+    if not path.exists():
+        return {}
+
+    try:
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read(path, encoding="utf-8")
+        return {
+            section: {key: value for key, value in parser.items(section)}
+            for section in parser.sections()
+        }
+    except Exception as exc:
+        logger.warning("local preset overrides ignored (%s): %s", path, exc)
+        return {}
+
+
 def generate_presets(models_dir: Path, budget: HardwareBudget,
                      preset_path: Path,
                      mtp_capable: set[str] | None = None) -> list[PresetEntry]:
@@ -84,6 +111,7 @@ def generate_presets(models_dir: Path, budget: HardwareBudget,
 
     entries: list[PresetEntry] = []
     sections: list[str] = []
+    local_overrides = _load_local_overrides()
     for gguf in _staged_in(models_dir):
         model_id = _strip_part(gguf.stem)
         try:
@@ -208,6 +236,15 @@ def generate_presets(models_dir: Path, budget: HardwareBudget,
                     # Unsloth's measured cliff: acceptance 83% at 2-3
                     # drafts, collapses at 4.
                     keys["spec-draft-n-max"] = "3"
+
+        # Machine-local values are authoritative and survive regeneration.
+        # The __delete__ sentinel removes an automatically generated key when
+        # the machine's validated policy deliberately contradicts auto-fit.
+        for key, value in local_overrides.get(model_id, {}).items():
+            if value.strip().lower() == "__delete__":
+                keys.pop(key, None)
+            else:
+                keys[key] = value
 
         entries.append(PresetEntry(model_id=model_id, window=decision.window,
                                    spilled=decision.spilled, keys=keys))
