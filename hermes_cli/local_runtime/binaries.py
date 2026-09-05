@@ -257,12 +257,17 @@ def ensure_runtime_installed(tag: str, backend: str,
     ``expected_sha256`` pins hashes per asset; without pins the computed hash is recorded in the
     manifest (trust on first download, verified on every reinstall). ``progress(stage, done,
     total, label)`` ticks through download/extract/verify."""
-    plan = resolve_assets(tag, backend)
-    install_dir = plan.install_dir
+    # A verified installation may be a locally registered source build.
+    # Check it before resolving downloadable assets: Linux CUDA releases do
+    # not provide prebuilt archives, but a verified source build is valid.
+    install_dir = runtimes_root() / tag / backend
     manifest_path = install_dir / "manifest.json"
     if manifest_verified(manifest_path):
         return install_dir
 
+    plan = resolve_assets(tag, backend)
+    install_dir = plan.install_dir
+    manifest_path = install_dir / "manifest.json"
     install_dir.mkdir(parents=True, exist_ok=True)
     downloads = runtimes_root() / "downloads"
     downloads.mkdir(parents=True, exist_ok=True)

@@ -5459,6 +5459,45 @@ def _resolve_task_provider_model(
             if cfg_key_env:
                 cfg_api_key = _scoped_key_env(cfg_key_env) or None
         resolved_api_mode = str(task_config.get("api_mode", "")).strip() or None
+
+    # Managed llama.cpp aliases carry their endpoint and key in server.json,
+    # not config.yaml or an environment variable. Resolve that dynamic
+    # endpoint before generic provider credential checks run.
+    _llamacpp_aliases = {"llamacpp", "llama.cpp", "llama-cpp"}
+    _explicit_provider = str(provider or "").strip().lower()
+    _configured_provider = str(cfg_provider or "").strip().lower()
+
+    if _explicit_provider in _llamacpp_aliases and not base_url:
+        try:
+            from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
+
+            _endpoint = resolve_llamacpp_endpoint()
+        except Exception:
+            _endpoint = None
+        if _endpoint:
+            base_url = str(_endpoint.get("base_url") or "").strip() or None
+            api_key = (
+                str(api_key or "").strip()
+                or str(_endpoint.get("api_key") or "").strip()
+                or None
+            )
+            resolved_api_mode = resolved_api_mode or "chat_completions"
+
+    elif not provider and _configured_provider in _llamacpp_aliases and not cfg_base_url:
+        try:
+            from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
+
+            _endpoint = resolve_llamacpp_endpoint()
+        except Exception:
+            _endpoint = None
+        if _endpoint:
+            cfg_base_url = str(_endpoint.get("base_url") or "").strip() or None
+            cfg_api_key = (
+                str(cfg_api_key or "").strip()
+                or str(_endpoint.get("api_key") or "").strip()
+                or None
+            )
+            resolved_api_mode = resolved_api_mode or "chat_completions"
     # 'auto' is a sentinel ("inherit / auto-detect"), not a model id — leaking it to the wire
     # yields a 200 with an error-text body that consumers accept as output. The explicit `model`
     # kwarg needs the same normalization: MoA slots forward preset `model:` fields through it.
