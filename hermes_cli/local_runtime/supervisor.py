@@ -42,6 +42,11 @@ def state_path() -> Path:
     return runtimes_root() / "server.json"
 
 
+def api_key_path() -> Path:
+    """Protected file consumed directly by llama-server for authentication."""
+    return runtimes_root() / ".api_key"
+
+
 def _quiet(fn) -> None:
     """Best-effort call; a child that vanished mid-walk is not an error."""
     with suppress(Exception):
@@ -75,15 +80,18 @@ def _stable_api_key() -> str:
     per-boot key strands every resumed session on HTTP 401 exactly as a per-boot port would on
     connection errors.
     """
-    key_path = runtimes_root() / ".api_key"
+    key_path = api_key_path()
     with suppress(OSError):
         existing = key_path.read_text(encoding="utf-8").strip()
         if len(existing) >= 16:
+            with suppress(OSError):
+                key_path.chmod(0o600)
             return existing
     key = secrets.token_urlsafe(24)
     try:
         key_path.parent.mkdir(parents=True, exist_ok=True)
         key_path.write_text(key, encoding="utf-8")
+        key_path.chmod(0o600)
     except OSError as exc:
         logger.warning("could not persist api key (%s); sessions will need "
                        "a re-pick after restart", exc)
@@ -151,7 +159,7 @@ class LlamaServerSupervisor:
             str(exe),
             "--host", "127.0.0.1",
             "--port", str(self.port),
-            "--api-key", self.api_key,
+            "--api-key-file", str(api_key_path()),
             "--models-dir", str(self.models_dir),
             "--models-max", str(self.models_max),
             # Residency contract: a chat request to a staged-but-unloaded model loads it (slow
@@ -197,6 +205,11 @@ class LlamaServerSupervisor:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"base_url": self.base_url, "api_key": self.api_key,
                                     "pid": self.proc.pid if self.proc else None}), encoding="utf-8")
+
+        # server.json carries the managed endpoint credential for other
+        # Hermes processes; keep it private to the owning account.
+        with suppress(OSError):
+            path.chmod(0o600)
 
     def _wait_health(self, timeout_s: int) -> None:
         deadline = time.monotonic() + timeout_s
