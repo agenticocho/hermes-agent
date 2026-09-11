@@ -10,8 +10,10 @@ token, generous budget, reasoning_content scanned); always dial 127.0.0.1 — re
 from __future__ import annotations
 
 from contextlib import suppress
+import datetime as _dt
 import json
 import logging
+import os
 import secrets
 import socket
 import subprocess
@@ -24,6 +26,12 @@ from pathlib import Path
 from hermes_cli.local_runtime.binaries import server_binary, runtimes_root
 
 logger = logging.getLogger(__name__)
+
+# Wall-clock anchor interval, seconds. llama-server.log has no absolute time: the router
+# and every model child stamp their own relative clocks. These markers are the only
+# absolute reference in the file. Lower it temporarily to measure relay lag; 2 is the
+# floor, bounded by the watchdog poll below.
+_CLOCK_MARKER_S = int(os.environ.get("HERMES_CLOCK_MARKER_S", "60"))
 
 TOUCH_PROMPT = "Reply with exactly one word: the capital of France."
 TOUCH_EXPECT = "paris"
@@ -181,11 +189,22 @@ class LlamaServerSupervisor:
             # The crash-restart loop calls _spawn repeatedly; each restart would leak one fd.
             _quiet(self._log_handle.close)
         self._log_handle = open(self.log_path, "a", encoding="utf-8", errors="replace")
-        self._log_handle.write(f"\n# spawn: {cmd}\n")
+        _spawn_ts = _dt.datetime.now(_dt.timezone.utc).astimezone()
+        self._log_handle.write(
+            f"\n# spawn: ts={_spawn_ts.isoformat(timespec='microseconds')}"
+            f" epoch={_spawn_ts.timestamp():.6f} mono={time.monotonic():.6f}"
+            f" sup_pid={os.getpid()} port={self.port}"
+            f" restarts={getattr(self, '_restarts', 0)} {cmd}\n")
         self._log_handle.flush()
         # list-args, never a shell: spaced paths (user homes) must survive.
         self.proc = subprocess.Popen(cmd, stdout=self._log_handle,
                                      stderr=subprocess.STDOUT, cwd=str(exe.parent))
+        _post_ts = _dt.datetime.now(_dt.timezone.utc).astimezone()
+        self._log_handle.write(
+            f"# spawned: ts={_post_ts.isoformat(timespec='microseconds')}"
+            f" bracket_ms={(_post_ts - _spawn_ts).total_seconds() * 1000:.3f}"
+            f" pid={self.proc.pid}\n")
+        self._log_handle.flush()
         logger.info("llama-server router spawned pid=%s port=%s", self.proc.pid, self.port)
         # State goes down at SPAWN, not after health: endpoint resolution treats a
         # live-pid-but-not-yet-healthy server as "starting" rather than "unconfigured", so a
@@ -224,14 +243,31 @@ class LlamaServerSupervisor:
             time.sleep(1)
         raise TimeoutError(f"llama-server not healthy after {timeout_s}s (log: {self.log_path})")
 
+    def _write_clock_marker(self) -> None:
+        """Absolute-time anchor in a file that otherwise has none."""
+        handle = self._log_handle
+        if handle is None:
+            return
+        ts = _dt.datetime.now(_dt.timezone.utc).astimezone()
+        # stop() closes the handle from the main thread while this one may be mid-write.
+        with suppress(ValueError, OSError):
+            handle.write(f"# clock: ts={ts.isoformat(timespec='microseconds')}"
+                         f" epoch={ts.timestamp():.6f} mono={time.monotonic():.6f}\n")
+            handle.flush()
+
     def _watch(self) -> None:
         """Restart the router (not its children) on crash, with backoff."""
+        _next_clock = 0.0
         while not self._stopping:
             proc = self.proc
             if proc is None:
                 return
             rc = proc.poll()
             if rc is None:
+                _now = time.monotonic()
+                if _now >= _next_clock:
+                    _next_clock = _now + _CLOCK_MARKER_S
+                    self._write_clock_marker()
                 time.sleep(2)
                 continue
             if self._stopping:
