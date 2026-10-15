@@ -706,8 +706,9 @@ def _handle_list(args: dict, **kw) -> str:
     _check(limit <= KANBAN_LIST_MAX_LIMIT, f"limit must be <= {KANBAN_LIST_MAX_LIMIT}")
     with _board(args.get("board")) as (kb, conn):
         # Match CLI list: dependencies cleared since the last dispatcher tick
-        # should be visible to orchestrators immediately.
-        promoted = kb.recompute_ready(conn)
+        # should be visible to orchestrators immediately. Best effort, so a
+        # fenced reader still gets its list (see kb.recompute_ready_for_read).
+        promoted = kb.recompute_ready_for_read(conn)
         # One extra row lets the output report truncation without dumping the board.
         rows = kb.list_tasks(
             conn, assignee=args.get("assignee"), status=args.get("status"),
@@ -719,7 +720,10 @@ def _handle_list(args: dict, **kw) -> str:
             "count": len(tasks), "limit": limit, "truncated": truncated,
             "next_limit": (min(limit * 2, KANBAN_LIST_MAX_LIMIT)
                            if truncated and limit < KANBAN_LIST_MAX_LIMIT else None),
-            "promoted": promoted})
+            "promoted": promoted or 0,
+            # True when this process may not write here, so the ready-recompute was
+            # skipped rather than refusing the read.
+            "promotions_skipped": promoted is None})
 
 
 @_kanban_handler("kanban_complete")

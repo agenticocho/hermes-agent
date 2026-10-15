@@ -2122,6 +2122,34 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
     return promoted
 
 
+def recompute_ready_for_read(
+    conn: sqlite3.Connection, failure_limit: int | None = None
+) -> int | None:
+    """:func:`recompute_ready` for a READ path: the count promoted, or ``None`` when this
+    process may not write here so the promotion was skipped instead.
+
+    ``list`` is a read verb, but it wants the mini-dispatch ``recompute_ready`` performs so a
+    card whose dependencies cleared since the last tick is already visible. A fenced reader —
+    a dispatcher worker's shell or a ``delegate_task`` descendant, where ``write_txn`` refuses
+    (``_assert_not_delegated_child_mutation``) — used to lose the whole listing to that refused
+    write: ``hermes kanban list`` exited 1 with "cannot mutate Kanban tasks", which is both the
+    wrong failure for a read and a wrong description of what was asked. Promotions are the
+    dispatcher tick's job and it re-runs them on every pass, so a fenced reader skips them and
+    still gets its list. Only the fence's own refusal is swallowed: any other ``PermissionError``
+    (or any other error) still propagates, and the fence itself is untouched.
+    """
+    try:
+        return recompute_ready(conn, failure_limit=failure_limit)
+    except PermissionError:
+        from agent.delegation_context import kanban_path_is_fenced
+        from hermes_cli.kanban_db_connect import _main_db_file
+
+        # Same path the guard in ``write_txn`` checked; ``None`` means the lineage's own board.
+        if not kanban_path_is_fenced(_main_db_file(conn) or kanban_home()):
+            raise
+        return None
+
+
 # --- Claim / complete / block ---
 
 def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:

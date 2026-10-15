@@ -421,13 +421,21 @@ def _cmd_list(args: argparse.Namespace) -> int:
     if args.mine and not assignee:
         assignee = _profile_author()
     with kbc.connect_closing() as conn:
-        # Cheap mini-dispatch so list reflects dependencies cleared since the last tick.
-        kb.recompute_ready(conn)
+        # Cheap mini-dispatch so list reflects dependencies cleared since the last tick. Best
+        # effort: a fenced reader (a dispatcher worker's or delegate child's shell) may not write
+        # here, and a READ must not fail over a write it merely wanted to do — the dispatcher's
+        # tick promotes on every pass (see kanban_db.recompute_ready_for_read).
+        promoted = kb.recompute_ready_for_read(conn)
         tasks = kb.list_tasks(
             conn, assignee=assignee, status=args.status, tenant=args.tenant, session_id=args.session,
             include_archived=args.archived, order_by=getattr(args, "sort", None),
             workflow_template_id=args.workflow_template_id, current_step_key=args.current_step_key,
         )
+    if promoted is None:
+        # stderr, so --json stdout stays parseable.
+        print("kanban: this shell is a worker/delegate descendant — the board is read-only here, "
+              "so ready-promotions were skipped; the dispatcher's next tick applies them.",
+              file=sys.stderr)
     if _json_out(args, [_task_to_dict(t) for t in tasks]):
         return 0
     # Passive discoverability: only multi-board users see which board this is.
